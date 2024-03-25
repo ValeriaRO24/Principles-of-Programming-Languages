@@ -1,0 +1,265 @@
+#lang racket #| * CSC324H5 Fall 2023: Assignment 4 * |#
+#|
+Module:        a4
+Description:   Assignment 4: A CPSer and A Relational CPSer
+Copyright: (c) University of Toronto Mississsauga
+               CSC324 Principles of Programming Languages, Fall 2023
+|#
+
+; This specifies which functions this module exports. Don't change this!
+#;(provide cps-define cps-insert cps-expr cps-inserto cps-expro)
+(provide cps-define cps-insert cps-expr )
+
+(require "mk.rkt") ; for task 2
+
+;-------------------------------------------------------------------------------
+; * Task 1: A CPSer *
+;-------------------------------------------------------------------------------
+
+#|
+(cps-define def) -> list?
+  def: list?
+    A definition that follows the grammar for <def> form the handout
+
+  Returns the equivalent definition in CPS, following the grammar
+  for <cdef> from the handout.
+|#
+(define/match (cps-define def)
+  [(`(define ,name ,expr)) ; this pattern uses the quasi-quote ` which
+                           ; works the similarly as the quote operation '
+                           ; but allows for unescaping quotation with the
+                           ; comma , --- so that `(define ,name ,expr)
+                           ; is equivalent to (list 'define name expr)
+   `(define ,name ,(cps-expr expr '(_)))])
+    ; likewise, this above code is equivalent to
+    ; (list 'define name (cps-expr expr '(_)))
+
+
+#|
+(cps-insert t frames) -> (and/or number? symbol? list?) 
+  t: (and/or number? symbol? list?) 
+    A trivial expression defined by the grammar for <t> from the handout
+  frames: (list?) 
+    A stack of frames where the first element of the list represents the
+    top of the stack. Each frame is an defined by the grammar for <frame>
+    from the handout.
+
+  Returns a <cexpr>.
+|#
+(define/match (cps-insert t frames)
+  [(t (cons (list 'cont k '_) xs))
+   (list k t)] 
+  [(t (cons (list 'app '_ expr) xs))
+   (cps-expr expr (cons (list 'app t '_) xs))]
+
+  
+  [(t (cons (list 'app trivexpr '_) xs))
+   (let* ([res (gensym 'r)]
+          [cont (list 'lambda (list res) (cps-insert res xs))])
+   (list trivexpr t cont))]
+
+  
+  [(t (cons (list op '_ expr) xs)) (
+    cps-expr expr (cons (list op t '_) xs))] ; need to cps expr then add/sub/eq
+  
+  [(t (cons (list op trivexpr '_) xs))
+   (cps-insert (list op trivexpr t) xs)] ; need to cps add/sub/eq
+  
+  [(t (cons (list 'if '_ then else) xs)) 
+       (let* ([thenres (cps-expr then xs)]
+             [elseres (cps-expr else xs)])
+         (list 'if t thenres elseres))]
+  [(a '(_)) a]
+  ) ; base
+
+
+#|
+(cps-expr expr frames) -> (and/or number? symbol? list?) 
+  expr: (and/or number? symbol? list?) 
+    An expression defined by the expression <expr> from the handout, to be
+    transformed into continuation passing style
+  frames: (list?) 
+    A stack of frames where the first element of the list represents the
+    top of the stack. Each frame is an defined by the grammar for <frame>
+    from the handout.
+
+  Returns the CPSed version of expr, following the grammar for <cexpr> in
+  the handout.
+|#
+(define/match (cps-expr expr frames)
+ [((list 'define id expr) frames) (list 'define id (cps-expr expr frames))]
+
+  
+ [((list 'lambda (list id) expr) frames)
+  (let* ([k (gensym 'k)])
+    (cps-insert (list `lambda (list id k) (cps-expr expr (list (list 'cont k '_)))) frames))]
+
+
+  
+ ;[((list 'lambda (list id) expr) frames)
+  ;(list `lamda (list id (gensym 'k)) (list (cps-expr expr (cons (list 'cont frames)
+ [((list op expr1 expr2) frames) (cps-expr expr1 (cons (list op '_ expr2) frames))] ; + - =
+ ;[((list '- expr1 expr2) frames) (cps-expr expr1 (cons (list '- '_ expr2) frames))]
+ ;[((list '= expr1 expr2) frames) (cps-expr expr1 (cons (list '= '_ expr2) frames))]
+ [((list 'if cond then else) frames) (cps-expr cond (cons (list 'if '_ then else) frames))] ; if
+ ;[((list 'lambda ids expr) frames) ()] ; if
+ [((list expr1 expr2) frames) (cps-expr expr1 (cons (list 'app '_ expr2) frames))] ; app
+ [(triv frames) (cps-insert triv frames)] ; num or id
+  )
+
+(require racket/trace)
+(trace cps-expr)    ; tell racket to trace calls to cps-expr
+(trace cps-insert)  ; ditto for cps-insert
+;-------------------------------------------------------------------------------
+; * Task 1: A Relational CPSer *
+;-------------------------------------------------------------------------------
+
+
+#|
+(cps-expro expr frames cexpr)
+  expr: (and/or number? symbol? list?) 
+    An expression defined by the expression <expr> from the handout, to be
+    transformed into continuation passing style
+  frames: (list?) 
+    A stack of frames where the first element of the list represents the
+    top of the stack. Each frame is an defined by the grammar for <frame>
+    from the handout.
+  cexpr: (and/or number? symbol? list?) 
+    The CPSed version of expr, following the grammar for <cexpr> in
+    the handout.
+
+  The relational form of the `cps-expr` function.
+|#
+(define (cps-expro expr frame cexpr)
+  (conde
+    ((conde ((symbolo expr)) ((numbero expr)))
+     (cps-inserto expr frame cexpr))
+    ((fresh (op e1 e2)
+       (== expr `(,op ,e1 ,e2))
+       (opo op)
+       (cps-expro e1 `((,op _ ,e2) . ,frame) cexpr)))
+    ((fresh (fn arg)
+       (== expr `(,fn ,arg))
+       (cps-expro fn `((app _ ,arg) . ,frame) cexpr)))
+    ((fresh (condition then alt)
+       (== expr `(if ,condition ,then ,alt))
+       
+       (cps-expro condition '((if _ ,then ,alt). ,frame) cexpr))
+     ;.. expro on then, alt and constrain 
+       ; TODO: what call(s) go(es) here?
+       )
+    ((fresh (id body k cpsbody)
+       (== expr `(lambda (,id) ,body))
+       (cps-inserto `(lambda (,id ,k) ,cpsbody) frame cexpr)
+       (cps-expro expr (list (list 'cont k '_)) cpsbody)
+       
+       ; TODO: what call(s) go(es) here?
+       ; notice that instead of using a call to `gensym`, we
+       ; use a fresh logic variable `k` to represent the
+       ; continuation variable
+       ))
+))
+
+
+
+#|
+(cps-inserto t frames cexpr) -> (and/or number? symbol? list?) 
+  t: (and/or number? symbol? list?) 
+    A trivial expression defined by the grammar for <t> from the handout
+  frames: (list?) 
+    A stack of frames where the first element of the list represents the
+    top of the stack. Each frame is an defined by the grammar for <frame>
+    from the handout.
+  cexpr: (and/or number? symbol? list?) 
+    The CPSed expression, following the grammar for <cexpr> in the handout.
+
+  The relational form of the `cps-insert` function.
+|#
+(define (cps-inserto t frames cexpr)
+  (conde((fresh (top res expr op)
+         (== frames (cons top res))
+         (== top (list op '_ expr))
+         (opo op)
+         (cps-expro expr (cons (list op t '_) res) cexpr ) 
+    
+          ));base case
+
+        ((fresh (top res texpr op)
+         (== frames (cons top res))
+         (opo op)
+         (== top (list op texpr '_))
+         (cps-inserto (list op texpr t) res cexpr)
+
+         ))
+
+        ((fresh (top then else res con cthen celse)
+         (== frames (cons top res))
+         (== top (list 'if '_ then else))
+         
+         (cps-expro then res cthen )
+         (cps-expro else res celse )
+         (== cexpr (list 'if t cthen celse))
+         
+
+         ))
+
+
+     
+
+        ((fresh (top res expr k)
+         (== frames (cons top res))
+         (== top (list 'cont k '_))
+         (== cexpr (cons k t))
+         ))
+
+      
+        ((fresh (top res expr )
+         (== frames (cons top res))
+         (== top (list 'app '_ expr))
+         (cps-expro expr (cons (list 'app t '_) res) cexpr ) 
+
+         ))
+
+        
+        ((fresh (top r texpr res newc cont)
+         (== frames (cons top r))
+         (== top (list 'app texpr '_))
+         (cps-inserto res r newc)
+         (== cont (list 'lambda (list res) newc))
+         (== cexpr (list texpr t cont))
+         ))
+
+        
+
+        ;((fresh (top res)
+        ; (== frames (cons top res))
+        ; (== '() top)
+         ;(== '() res)
+        ;(== t cexpr)
+        ; ))
+
+        ((== '(_) frames)
+         (== t cexpr)
+         )
+
+
+
+        
+         
+
+         
+        
+        
+        
+        
+
+         ))
+
+
+
+
+
+; Helper function
+(define (opo op)
+   (conde ((== op '=)) ((== op '+)) ((== op '-))))
+
